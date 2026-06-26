@@ -1,0 +1,680 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Greenhouse Monitor</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+
+  <style>
+    :root {
+      --bg:      #f8fafc;
+      --surface: #ffffff;
+      --border:  #e2e8f0;
+      --text:    #0f172a;
+      --muted:   #64748b;
+      --subtle:  #94a3b8;
+      --line:    #cbd5e1;
+      --green:   #16a34a;
+      --red:     #dc2626;
+      --soil:    #2563eb;
+      --temp:    #ea580c;
+      --humid:   #0891b2;
+      --warn:    #d97706;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Rubik', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── Card ────────────────────────────────────────────────────────────── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+      transition: border-color 0.25s ease;
+    }
+    .card.alert-active { border-color: #fecaca; }
+
+    /* ── Section label ───────────────────────────────────────────────────── */
+    .section-label {
+      font-size: 0.68rem;
+      font-weight: 600;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+      color: var(--subtle);
+      margin-bottom: 0.85rem;
+    }
+
+    /* ── Sensor value ────────────────────────────────────────────────────── */
+    .sensor-val {
+      font-size: 3rem;
+      font-weight: 700;
+      line-height: 1;
+    }
+
+    /* ── Gauge SVG arc ───────────────────────────────────────────────────── */
+    .gauge-arc {
+      transition: stroke-dashoffset 0.55s cubic-bezier(0.4, 0, 0.2, 1),
+                  stroke 0.25s ease;
+    }
+
+    /* ── Progress bar ────────────────────────────────────────────────────── */
+    .soil-fill {
+      height: 100%;
+      border-radius: 999px;
+      transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1),
+                  background-color 0.25s ease;
+    }
+
+    /* ── Status dot pulse ────────────────────────────────────────────────── */
+    @keyframes live-ring {
+      0%   { box-shadow: 0 0 0 0 rgba(22, 163, 74, 0.45); }
+      70%  { box-shadow: 0 0 0 5px rgba(22, 163, 74, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(22, 163, 74, 0); }
+    }
+    .dot-live { animation: live-ring 2s ease-in-out infinite; }
+
+    /* ── Range sliders ───────────────────────────────────────────────────── */
+    input[type=range] {
+      -webkit-appearance: none;
+      width: 100%;
+      height: 4px;
+      background: var(--border);
+      border-radius: 2px;
+      outline: none;
+      cursor: pointer;
+    }
+    input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 14px; height: 14px;
+      border-radius: 50%;
+      background: #fff;
+      border: 2px solid var(--warn);
+      cursor: pointer;
+      transition: transform 0.15s;
+    }
+    input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.2); }
+
+    /* ── Buttons ─────────────────────────────────────────────────────────── */
+    .btn {
+      font-family: 'Rubik', sans-serif;
+      font-size: 0.78rem;
+      font-weight: 600;
+      padding: 0.45rem 0.75rem;
+      border-radius: 7px;
+      border: 1px solid transparent;
+      background: #fff;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+      outline: none;
+    }
+    .btn:disabled { opacity: 0.35; cursor: not-allowed; pointer-events: none; }
+
+    .btn-green  { border-color: var(--green); color: var(--green); }
+    .btn-green:hover  { background: var(--green);  color: #fff; }
+
+    .btn-red    { border-color: var(--red);   color: var(--red); }
+    .btn-red:hover    { background: var(--red);    color: #fff; }
+
+    .btn-amber  { border-color: var(--warn);  color: var(--warn); width: 100%; }
+    .btn-amber:hover  { background: var(--warn);   color: #fff; }
+
+    .btn-blue   { border-color: var(--soil);  color: var(--soil); width: 100%; }
+    .btn-blue:hover   { background: var(--soil);   color: #fff; }
+
+    .btn-muted  { border-color: var(--border); color: var(--subtle); cursor: not-allowed; }
+
+    /* ── Text input ──────────────────────────────────────────────────────── */
+    .ctrl-input {
+      width: 100%;
+      font-family: 'Rubik', sans-serif;
+      font-size: 0.82rem;
+      padding: 0.45rem 0.7rem;
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      color: var(--text);
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .ctrl-input:focus { border-color: var(--soil); }
+    .ctrl-input::placeholder { color: var(--line); }
+
+    /* ── Toast ───────────────────────────────────────────────────────────── */
+    .toast {
+      position: fixed;
+      bottom: 1.5rem; right: 1.5rem;
+      z-index: 200;
+      font-family: 'Rubik', sans-serif;
+      font-size: 0.8rem;
+      font-weight: 500;
+      padding: 0.6rem 1rem;
+      border-radius: 8px;
+      border-left: 3px solid transparent;
+      background: #fff;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+      opacity: 1;
+      transform: translateY(0);
+      transition: opacity 0.3s ease, transform 0.3s ease;
+    }
+    .toast.out { opacity: 0; transform: translateY(6px); }
+    .t-success { border-color: var(--green); color: #15803d; }
+    .t-error   { border-color: var(--red);   color: var(--red); }
+    .t-info    { border-color: var(--line);   color: var(--muted); }
+
+    /* ── Alert banner ────────────────────────────────────────────────────── */
+    #alert-banner {
+      border-bottom-width: 1px;
+      border-bottom-style: solid;
+      transition: background 0.3s ease, border-color 0.3s ease;
+    }
+
+    /* ── Page-load stagger ───────────────────────────────────────────────── */
+    @keyframes fade-up {
+      from { opacity: 0; transform: translateY(8px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .fade-up { animation: fade-up 0.35s ease both; }
+    .d1 { animation-delay: 0.04s; }
+    .d2 { animation-delay: 0.08s; }
+    .d3 { animation-delay: 0.12s; }
+    .d4 { animation-delay: 0.16s; }
+    .d5 { animation-delay: 0.20s; }
+
+    /* ── Scrollbar ───────────────────────────────────────────────────────── */
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-track { background: var(--bg); }
+    ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 3px; }
+  </style>
+</head>
+<body>
+
+<!-- ══ HEADER ════════════════════════════════════════════════════════════════ -->
+<header style="background:#fff;border-bottom:1px solid #e2e8f0;position:sticky;top:0;z-index:40;">
+  <div style="max-width:1280px;margin:0 auto;padding:0 1.25rem;height:54px;display:flex;align-items:center;justify-content:space-between;">
+
+    <div style="display:flex;align-items:center;gap:0.55rem;">
+      <span style="font-size:1.25rem;">🌿</span>
+      <span style="font-weight:600;font-size:0.92rem;color:#0f172a;letter-spacing:-0.01em;">Greenhouse Monitor</span>
+    </div>
+
+    <div style="display:flex;align-items:center;gap:1.25rem;">
+      <div style="display:flex;align-items:center;gap:0.45rem;">
+        <div id="status-dot" style="width:8px;height:8px;border-radius:50%;background:#cbd5e1;flex-shrink:0;transition:background 0.3s;"></div>
+        <span id="status-text" style="font-size:0.75rem;font-weight:500;color:#94a3b8;">Offline</span>
+      </div>
+      <span id="last-update" style="font-size:0.7rem;color:#cbd5e1;"></span>
+    </div>
+  </div>
+</header>
+
+<!-- ══ STATUS BANNER — always visible ════════════════════════════════════════ -->
+<div id="alert-banner" style="background:#f0fdf4;border-color:#bbf7d0;padding:0.45rem 1.25rem;">
+  <div style="max-width:1280px;margin:0 auto;">
+    <span id="alert-reason" style="font-size:0.75rem;font-weight:500;color:#15803d;"></span>
+  </div>
+</div>
+
+<main style="max-width:1280px;margin:0 auto;padding:1.25rem;display:flex;flex-direction:column;gap:1rem;">
+
+  <!-- ══ SENSOR CARDS ═══════════════════════════════════════════════════════ -->
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1rem;">
+
+    <!-- Soil Moisture -->
+    <div id="soil-card" class="card fade-up d1" style="padding:1.25rem;">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:1rem;">
+        <div>
+          <p class="section-label" style="margin-bottom:0.4rem;">Soil Moisture</p>
+          <div style="display:flex;align-items:baseline;gap:0.3rem;">
+            <span id="soil-value" class="sensor-val" style="color:var(--soil);">---</span>
+            <span style="font-size:0.8rem;font-weight:500;color:var(--subtle);">/1023</span>
+          </div>
+        </div>
+        <span style="font-size:1.4rem;margin-top:2px;">💧</span>
+      </div>
+
+      <!-- Progress bar -->
+      <div style="position:relative;height:6px;background:#f1f5f9;border-radius:999px;overflow:visible;margin-bottom:0.3rem;">
+        <div id="soil-bar" class="soil-fill" style="width:0%;background:var(--soil);"></div>
+        <div id="soil-threshold-marker"
+          style="position:absolute;top:-4px;bottom:-4px;width:2px;left:39.1%;background:var(--warn);border-radius:1px;transition:left 0.2s ease;"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.9rem;">
+        <span style="font-size:0.62rem;color:var(--line);">0</span>
+        <span id="soil-threshold-label" style="font-size:0.65rem;font-weight:500;color:var(--warn);">Threshold: 400</span>
+        <span style="font-size:0.62rem;color:var(--line);">1023</span>
+      </div>
+
+      <div id="soil-status" style="font-size:0.73rem;font-weight:500;color:var(--subtle);">Awaiting data...</div>
+    </div>
+
+    <!-- Temperature -->
+    <div id="temp-card" class="card fade-up d2" style="padding:1.25rem;">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:0.25rem;">
+        <div>
+          <p class="section-label" style="margin-bottom:0.4rem;">Temperature</p>
+          <div style="display:flex;align-items:baseline;gap:0.15rem;">
+            <span id="temp-value" class="sensor-val" style="color:var(--temp);">--.-</span>
+            <span style="font-size:1.2rem;font-weight:600;color:var(--temp);">°C</span>
+          </div>
+        </div>
+        <span style="font-size:1.4rem;margin-top:2px;">🌡️</span>
+      </div>
+
+      <div style="display:flex;justify-content:center;margin:0.25rem 0 0.15rem;">
+        <svg viewBox="0 0 120 72" style="width:158px;overflow:visible;">
+          <path d="M 10 65 A 50 50 0 0 1 110 65"
+            fill="none" stroke="#f1f5f9" stroke-width="8" stroke-linecap="round"/>
+          <path id="temp-gauge-arc" class="gauge-arc"
+            d="M 10 65 A 50 50 0 0 1 110 65"
+            fill="none" stroke="#ea580c" stroke-width="8" stroke-linecap="round"
+            stroke-dasharray="157" stroke-dashoffset="157"/>
+          <text x="6"   y="74" fill="#cbd5e1" font-size="7" font-family="Rubik,sans-serif">0°</text>
+          <text x="98"  y="74" fill="#cbd5e1" font-size="7" font-family="Rubik,sans-serif">50°</text>
+          <text x="50"  y="20" fill="#e2e8f0" font-size="7" font-family="Rubik,sans-serif">25°</text>
+        </svg>
+      </div>
+
+      <div id="temp-status" style="font-size:0.73rem;font-weight:500;color:var(--subtle);text-align:center;margin-top:0.1rem;">Awaiting data...</div>
+    </div>
+
+    <!-- Humidity -->
+    <div id="humidity-card" class="card fade-up d3" style="padding:1.25rem;">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:0.25rem;">
+        <div>
+          <p class="section-label" style="margin-bottom:0.4rem;">Humidity</p>
+          <div style="display:flex;align-items:baseline;gap:0.15rem;">
+            <span id="humidity-value" class="sensor-val" style="color:var(--humid);">--.-</span>
+            <span style="font-size:1.2rem;font-weight:600;color:var(--humid);">%</span>
+          </div>
+        </div>
+        <span style="font-size:1.4rem;margin-top:2px;">💨</span>
+      </div>
+
+      <div style="display:flex;justify-content:center;margin:0.25rem 0 0.15rem;">
+        <svg viewBox="0 0 120 72" style="width:158px;overflow:visible;">
+          <path d="M 10 65 A 50 50 0 0 1 110 65"
+            fill="none" stroke="#f1f5f9" stroke-width="8" stroke-linecap="round"/>
+          <path id="humidity-gauge-arc" class="gauge-arc"
+            d="M 10 65 A 50 50 0 0 1 110 65"
+            fill="none" stroke="#0891b2" stroke-width="8" stroke-linecap="round"
+            stroke-dasharray="157" stroke-dashoffset="157"/>
+          <text x="4"   y="74" fill="#cbd5e1" font-size="7" font-family="Rubik,sans-serif">0%</text>
+          <text x="94"  y="74" fill="#cbd5e1" font-size="7" font-family="Rubik,sans-serif">100%</text>
+          <text x="50"  y="20" fill="#e2e8f0" font-size="7" font-family="Rubik,sans-serif">50%</text>
+        </svg>
+      </div>
+
+      <div id="humidity-status" style="font-size:0.73rem;font-weight:500;color:var(--subtle);text-align:center;margin-top:0.1rem;">Awaiting data...</div>
+    </div>
+  </div>
+
+  <!-- ══ CHARTS ════════════════════════════════════════════════════════════ -->
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1rem;" class="fade-up d4">
+
+    <div class="card" style="padding:1rem;">
+      <p class="section-label">Soil Moisture History</p>
+      <canvas id="soil-chart" height="100"></canvas>
+    </div>
+
+    <div class="card" style="padding:1rem;">
+      <p class="section-label">Temperature History</p>
+      <canvas id="temp-chart" height="100"></canvas>
+    </div>
+
+    <div class="card" style="padding:1rem;">
+      <p class="section-label">Humidity History</p>
+      <canvas id="humidity-chart" height="100"></canvas>
+    </div>
+  </div>
+
+  <!-- ══ CONTROLS ══════════════════════════════════════════════════════════ -->
+  <div class="card fade-up d5" style="padding:1.25rem;">
+    <p class="section-label">Controls</p>
+
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:1.5rem;">
+
+      <!-- Connection -->
+      <div style="display:flex;flex-direction:column;gap:0.5rem;">
+        <label style="font-size:0.75rem;font-weight:500;color:var(--text);">COM Port</label>
+        <input id="com-port" type="text" value="COM7" placeholder="COM7 or demo" class="ctrl-input">
+        <div style="display:flex;gap:0.5rem;">
+          <button id="start-btn" class="btn btn-green" style="flex:1;" onclick="startReading()">▶ Start</button>
+          <button id="stop-btn"  class="btn btn-muted" style="flex:1;" onclick="stopReading()" disabled>⏹ Stop</button>
+        </div>
+      </div>
+
+      <!-- Soil threshold -->
+      <div style="display:flex;flex-direction:column;gap:0.45rem;">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <label style="font-size:0.75rem;font-weight:500;color:var(--text);">Soil Threshold</label>
+          <span id="soil-threshold-display" style="font-size:0.82rem;font-weight:600;color:var(--warn);">400</span>
+        </div>
+        <input id="soil-threshold-input" type="range" min="100" max="900" value="400" oninput="updateThresholdDisplay()">
+        <div style="display:flex;justify-content:space-between;">
+          <span style="font-size:0.62rem;color:var(--line);">100</span>
+          <span style="font-size:0.62rem;color:var(--line);">900</span>
+        </div>
+      </div>
+
+      <!-- Temp threshold -->
+      <div style="display:flex;flex-direction:column;gap:0.45rem;">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <label style="font-size:0.75rem;font-weight:500;color:var(--text);">Temp Threshold</label>
+          <span id="temp-threshold-display" style="font-size:0.82rem;font-weight:600;color:var(--warn);">30°C</span>
+        </div>
+        <input id="temp-threshold-input" type="range" min="15" max="45" value="30" step="0.5" oninput="updateThresholdDisplay()">
+        <div style="display:flex;justify-content:space-between;">
+          <span style="font-size:0.62rem;color:var(--line);">15°C</span>
+          <span style="font-size:0.62rem;color:var(--line);">45°C</span>
+        </div>
+        <button class="btn btn-amber" onclick="applyThresholds()">Apply Thresholds</button>
+      </div>
+
+      <!-- Export -->
+      <div style="display:flex;flex-direction:column;gap:0.5rem;">
+        <label style="font-size:0.75rem;font-weight:500;color:var(--text);">Export Data</label>
+        <p style="font-size:0.72rem;color:var(--muted);line-height:1.5;">Download all recorded sensor readings as a CSV file.</p>
+        <button class="btn btn-blue" onclick="exportCSV()">⬇ Export CSV</button>
+      </div>
+
+    </div>
+  </div>
+
+</main>
+
+<script>
+// ── Socket.IO ─────────────────────────────────────────────────────────────────
+const socket = io();
+
+socket.on('sensor_data', (data) => {
+  updateReadings(data);
+  pushToCharts(data);
+});
+
+socket.on('error', (data) => {
+  toast(data.message, 'error');
+  setOffline();
+});
+
+// ── Chart.js ──────────────────────────────────────────────────────────────────
+function makeChart(id, color, yMin, yMax) {
+  const ctx = document.getElementById(id).getContext('2d');
+  return new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: [],
+      datasets: [{
+        data: [],
+        borderColor: color,
+        backgroundColor: color + '12',   // flat 7% opacity fill — not a gradient
+        borderWidth: 1.5,
+        pointRadius: 0,
+        fill: true,
+        tension: 0.3,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      animation: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#fff',
+          borderColor: '#e2e8f0',
+          borderWidth: 1,
+          titleColor: '#94a3b8',
+          bodyColor: '#0f172a',
+          titleFont: { family: 'Rubik', size: 9 },
+          bodyFont:  { family: 'Rubik', size: 11, weight: '600' },
+          padding: 8,
+        }
+      },
+      scales: {
+        x: { display: false },
+        y: {
+          min: yMin,
+          max: yMax,
+          grid:   { color: '#f1f5f9' },
+          border: { display: false },
+          ticks: {
+            color: '#cbd5e1',
+            font: { family: 'Rubik', size: 9 },
+            maxTicksLimit: 4,
+          }
+        }
+      }
+    }
+  });
+}
+
+const charts = {
+  soil:     makeChart('soil-chart',     '#2563eb', 0,    1023),
+  temp:     makeChart('temp-chart',     '#ea580c', 0,    50),
+  humidity: makeChart('humidity-chart', '#0891b2', 0,    100),
+};
+
+let readingIdx = 0;
+
+function pushToCharts(data) {
+  readingIdx++;
+  const lbl = String(readingIdx);
+  [[charts.soil, data.soil], [charts.temp, data.temp], [charts.humidity, data.humidity]]
+    .forEach(([chart, val]) => {
+      chart.data.labels.push(lbl);
+      chart.data.datasets[0].data.push(val);
+      if (chart.data.labels.length > 50) {
+        chart.data.labels.shift();
+        chart.data.datasets[0].data.shift();
+      }
+      chart.update('none');
+    });
+}
+
+// ── SVG gauge ─────────────────────────────────────────────────────────────────
+const ARC = 157;
+function setGauge(id, value, min, max) {
+  const pct = Math.max(0, Math.min(1, (value - min) / (max - min)));
+  document.getElementById(id).style.strokeDashoffset = ARC * (1 - pct);
+}
+
+// ── Thresholds ────────────────────────────────────────────────────────────────
+let thresholds = { soil: 400, temp: 30 };
+
+// ── Update all readings ───────────────────────────────────────────────────────
+function updateReadings(data) {
+  const soilAlert = data.soil > thresholds.soil;
+  const tempAlert = data.temp > thresholds.temp;
+
+  // ── Soil
+  document.getElementById('soil-value').textContent = data.soil;
+  document.getElementById('soil-bar').style.width = (data.soil / 1023 * 100).toFixed(2) + '%';
+  document.getElementById('soil-bar').style.background = soilAlert ? '#dc2626' : '#2563eb';
+  document.getElementById('soil-status').textContent  = soilAlert
+    ? '⚠ Soil too dry — above threshold'
+    : '✓ Soil moisture normal';
+  document.getElementById('soil-status').style.color  = soilAlert ? '#dc2626' : '#16a34a';
+  document.getElementById('soil-card').classList.toggle('alert-active', soilAlert);
+
+  // ── Temperature
+  document.getElementById('temp-value').textContent = typeof data.temp === 'number'
+    ? data.temp.toFixed(1) : '--.-';
+  setGauge('temp-gauge-arc', data.temp, 0, 50);
+  document.getElementById('temp-gauge-arc').style.stroke = tempAlert ? '#dc2626' : '#ea580c';
+  document.getElementById('temp-status').textContent  = tempAlert
+    ? '⚠ Temperature too high'
+    : '✓ Temperature normal';
+  document.getElementById('temp-status').style.color  = tempAlert ? '#dc2626' : '#16a34a';
+  document.getElementById('temp-card').classList.toggle('alert-active', tempAlert);
+
+  // ── Humidity
+  const hv = typeof data.humidity === 'number' ? data.humidity : 0;
+  document.getElementById('humidity-value').textContent = hv.toFixed(1);
+  setGauge('humidity-gauge-arc', hv, 0, 100);
+  document.getElementById('humidity-status').textContent = '✓ Humidity normal';
+  document.getElementById('humidity-status').style.color = '#16a34a';
+
+  // ── Status banner (always visible)
+  const banner    = document.getElementById('alert-banner');
+  const bannerTxt = document.getElementById('alert-reason');
+  if (data.alert) {
+    const reasons = [];
+    if (soilAlert) reasons.push('soil too dry');
+    if (tempAlert) reasons.push('temperature too high');
+    banner.style.background   = '#fef2f2';
+    banner.style.borderColor  = '#fecaca';
+    bannerTxt.textContent     = '⚠ Alert — ' + reasons.join(' / ');
+    bannerTxt.style.color     = '#dc2626';
+  } else {
+    banner.style.background   = '#f0fdf4';
+    banner.style.borderColor  = '#bbf7d0';
+    bannerTxt.textContent     = '✓ All systems normal';
+    bannerTxt.style.color     = '#15803d';
+  }
+
+  // ── Header timestamp
+  document.getElementById('last-update').textContent =
+    new Date().toLocaleTimeString([], { hour12: false });
+  setOnline();
+}
+
+// ── Connection helpers ────────────────────────────────────────────────────────
+function setOnline() {
+  const dot = document.getElementById('status-dot');
+  dot.style.background = '#16a34a';
+  dot.classList.add('dot-live');
+  const txt = document.getElementById('status-text');
+  txt.textContent = 'Live';
+  txt.style.color = '#16a34a';
+}
+
+function setOffline() {
+  const dot = document.getElementById('status-dot');
+  dot.style.background = '#cbd5e1';
+  dot.classList.remove('dot-live');
+  const txt = document.getElementById('status-text');
+  txt.textContent = 'Offline';
+  txt.style.color = '#94a3b8';
+  const startBtn = document.getElementById('start-btn');
+  const stopBtn  = document.getElementById('stop-btn');
+  startBtn.disabled = false;
+  startBtn.className = 'btn btn-green';
+  stopBtn.disabled   = true;
+  stopBtn.className  = 'btn btn-muted';
+}
+
+// ── Controls ──────────────────────────────────────────────────────────────────
+async function startReading() {
+  const port = document.getElementById('com-port').value.trim() || 'COM7';
+  try {
+    const res  = await fetch('/api/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ port }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      document.getElementById('start-btn').disabled = true;
+      document.getElementById('start-btn').className = 'btn btn-muted';
+      document.getElementById('stop-btn').disabled   = false;
+      document.getElementById('stop-btn').className  = 'btn btn-red';
+      toast(data.demo ? 'Demo mode started' : `Connected to ${data.port}`, 'success');
+    } else {
+      toast(data.message, 'error');
+    }
+  } catch { toast('Connection failed', 'error'); }
+}
+
+async function stopReading() {
+  await fetch('/api/stop', { method: 'POST' });
+  setOffline();
+  toast('Monitoring stopped', 'info');
+}
+
+function updateThresholdDisplay() {
+  const sv = parseInt(document.getElementById('soil-threshold-input').value);
+  const tv = parseFloat(document.getElementById('temp-threshold-input').value);
+  document.getElementById('soil-threshold-display').textContent = sv;
+  document.getElementById('temp-threshold-display').textContent = tv + '°C';
+  document.getElementById('soil-threshold-marker').style.left   = (sv / 1023 * 100).toFixed(2) + '%';
+  document.getElementById('soil-threshold-label').textContent   = 'Threshold: ' + sv;
+}
+
+async function applyThresholds() {
+  const soil = parseInt(document.getElementById('soil-threshold-input').value);
+  const temp = parseFloat(document.getElementById('temp-threshold-input').value);
+  try {
+    const res  = await fetch('/api/thresholds', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ soil, temp }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      thresholds = { soil: data.soil, temp: data.temp };
+      toast('Thresholds updated', 'success');
+    }
+  } catch { toast('Failed to update', 'error'); }
+}
+
+function exportCSV() { window.location.href = '/api/export'; }
+
+// ── Toast ─────────────────────────────────────────────────────────────────────
+function toast(msg, type = 'info') {
+  const el = document.createElement('div');
+  el.className = `toast t-${type}`;
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => {
+    el.classList.add('out');
+    setTimeout(() => el.remove(), 320);
+  }, 3000);
+}
+
+// ── Init: restore state on page load ─────────────────────────────────────────
+async function init() {
+  try {
+    const res  = await fetch('/api/status');
+    const data = await res.json();
+
+    thresholds = { soil: data.soil_threshold, temp: data.temp_threshold };
+    document.getElementById('soil-threshold-input').value = data.soil_threshold;
+    document.getElementById('temp-threshold-input').value = data.temp_threshold;
+    updateThresholdDisplay();
+
+    if (data.port) document.getElementById('com-port').value = data.port;
+
+    if (data.history && data.history.length > 0) {
+      data.history.forEach(r => pushToCharts(r));
+      updateReadings(data.history[data.history.length - 1]);
+    }
+
+    if (data.running) {
+      document.getElementById('start-btn').disabled = true;
+      document.getElementById('start-btn').className = 'btn btn-muted';
+      document.getElementById('stop-btn').disabled   = false;
+      document.getElementById('stop-btn').className  = 'btn btn-red';
+    }
+  } catch { /* server starting up */ }
+}
+
+init();
+</script>
+</body>
+</html>
